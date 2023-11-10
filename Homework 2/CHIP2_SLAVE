@@ -1,1 +1,143 @@
+;
+; CHIP2_SLAVE.asm
 
+;This file was made by VO THIEN NHAN-2151025 on 11/10/2023
+/* List of connections of chip 2:
+ PORTA of atmega324pa slave is connected to keypad
+PB3: IRQ 
+PB4: SS 
+PB5: MOSI 		
+PB6: MISO 
+PB7: SCK 
+*/
+.ORG 0x0000
+rjmp reset_handler
+
+reset_handler:
+	CALL SPI_Init; init SPI for slave
+start:
+    CALL keypad_scan ; value from keypad is stored in R24
+	CPI R24,0xFF; 
+	BREQ ENDSCANNING; If keypad is not pressed (R24 = 0xFF, start again)
+	CPI R23,1;
+	BREQ ENDSCANNING1; if keypad is not released yet, skip sending data
+	CALL SPI_Transmit_SLAVE; transmit data (in R24) to chip 1 via SPI
+	LDI R23,1
+	rjmp start
+ENDSCANNING:
+	LDI R23,0
+ ENDSCANNING1:
+    rjmp start
+
+;--------------------------------SPI SUBROUTINES--------------------------------;
+.equ	IRQ = 3
+.equ	SS = 4
+.equ	MOSI = 5		;for ATmega324PA
+.equ	MISO = 6
+.equ	SCK = 7
+SPI_Init:
+	push r17
+	LDI 	R17,(1<<MISO)|(1<<IRQ)
+	OUT 	DDRB,R17	;MISO and IRQ output, MOSI and SS input 
+	LDI		R17,(1<<MOSI) | (1 << SS)|(1 <<IRQ)|(1<<SCK)
+	OUT		PORTB,R17; enable pull up res for input MOSI, SCK and input SS, initialize IRQ = 1
+	LDI 	R17,(1<<SPE0)	;enable SPI
+	OUT 	SPCR0,R17	;
+	pop r17
+	ret
+SPI_Transmit_SLAVE: ; data stored in R24 is transmitted
+	push r20
+	CBI		PORTB,IRQ; pull IRQ to low
+	nop
+	nop
+WaitA:
+	IN		R20,PINB
+	SBRC 	R20,SS	;wait for transmission	
+	RJMP	WAITA;
+	OUT     SPDR0,R24; place keycode into SPI data register
+Wait1:
+	IN		R20,SPSR0
+	SBRS 	R20,SPIF0	;wait for transmission
+	RJMP 	Wait1
+	IN      R20,SPDR0; read transmmited data
+	NOP
+	SBI		PORTB,IRQ; pull IRQ to high
+	pop r20
+	RET
+
+;--------------------------------KEYPAD 4x4 SUBROUTINES--------------------------------;
+
+keypad_scan:
+	push r20
+	push r22
+	push r23
+	ldi r20, 0b00001111 ; set upper 4 bits of PORTA as input with pull-up, lower 4 bits as output
+	nop
+	out DDRA, r20
+	ldi r20, 0b11111111 ; enable pull up resistor 
+	nop
+	out PORTA, r20
+	ldi r22, 0b11110111 ; initial col mask
+	ldi r23,0; initial pressed row value
+	ldi r24,3 ;scanning col index
+keypad_scan_loop:
+	out PORTA, r22 ; scan current col
+	nop ;need to have 1us delay to stablize
+	nop
+	nop
+	sbic PINA, 4 ; check row 0
+	rjmp keypad_scan_check_col2
+	rjmp keypad_scan_found ; row 0 is pressed
+keypad_scan_check_col2:
+	sbic PINA, 5 ; check row 1
+	rjmp keypad_scan_check_col3
+	ldi r23, 1 ; row1 is pressed
+	rjmp keypad_scan_found
+keypad_scan_check_col3:
+	sbic PINA, 6 ; check row 2
+	rjmp keypad_scan_check_col4
+	ldi r23, 2 ; row 2 is pressed
+	rjmp keypad_scan_found
+keypad_scan_check_col4:
+	sbic PINA, 7 ; check row 3
+	rjmp keypad_scan_next_row
+	ldi r23, 3 ; row 3 is pressed
+	rjmp keypad_scan_found
+keypad_scan_next_row:
+ ; check if all rows have been scanned
+	cpi r24,0;
+	breq keypad_scan_not_found
+ ; shift row mask to scan next row
+	ror r22
+	dec r24 ;increase row index
+	rjmp keypad_scan_loop
+keypad_scan_found:
+ ; combine row and column to get key value (0-15)
+;key code = row*4 + col
+	lsl r23 ; shift row value 4 bits to the left
+	lsl r23
+	add r24, r23 ; add row value to column value
+	pop r23
+	pop r22
+	pop r20
+	ret
+keypad_scan_not_found:
+	ldi r24, 0xFF ; no key pressed
+	pop r23
+	pop r22
+	pop r20
+	ret
+
+DELAY_10MS:
+PUSH R20
+PUSH R21
+LDI R21,80 ;1MC
+L1: LDI R20,250 ;1MC
+L2: DEC R20 ;1MC
+NOP ;1MC
+BRNE L2 ;2/1MC
+DEC R21 ;1MC
+BRNE L1 ;2/1MC
+POP R21
+POP R20
+ RET ;4MC
